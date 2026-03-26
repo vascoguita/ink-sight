@@ -3,7 +3,7 @@
 import argparse
 import sys
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from icalevents.icalevents import events
 from icalevents.icalparser import Event
@@ -15,70 +15,92 @@ class CalendarClient:
 
     url: str
 
-    @staticmethod
-    def _is_relevant_event(event: Event, current_time: datetime) -> bool:
-        """Check if an event is ongoing or starts today in local time."""
-        if event.start is None or event.end is None:
-            return False
-        is_active = event.end > current_time
-        starts_today_or_before = (
-            event.start.astimezone().date() <= current_time.astimezone().date()
-        )
-        return is_active and starts_today_or_before
-
-    def fetch_todays_events(self, count: int = 2) -> list[Event]:
-        """Fetch today's current or next events from the calendar."""
-        all_events = events(self.url)
+    def _fetch_events(self) -> list[Event]:
+        """Fetch events dynamically for the current narrow window."""
         now = datetime.now(UTC)
+        start = now - timedelta(days=1)
+        end = now + timedelta(days=1)
+        return events(self.url, start=start, end=end, fix_apple=True, sort=True)
 
-        relevant_events = [
-            event for event in all_events if self._is_relevant_event(event, now)
-        ]
-        relevant_events.sort(key=lambda e: e.start)
-        return relevant_events[:count]
+    def fetch_current_event(self) -> Event | None:
+        """Fetch the currently ongoing event."""
+        all_events = self._fetch_events()
+        now = datetime.now(UTC)
+        for event in all_events:
+            if event.start is None or event.end is None:
+                continue
+            if event.start <= now < event.end:
+                return event
+        return None
+
+    def fetch_next_event(self) -> Event | None:
+        """Fetch the next upcoming event today."""
+        all_events = self._fetch_events()
+        now = datetime.now(UTC)
+        for event in all_events:
+            if event.start is None or event.end is None:
+                continue
+            if (
+                event.start > now
+                and event.start.astimezone().date() == now.astimezone().date()
+            ):
+                return event
+        return None
 
 
 class CalendarCLI:
     """CLI application to display today's calendar events."""
 
-    @staticmethod
-    def create_parser() -> argparse.ArgumentParser:
-        """Create and configure the command-line argument parser."""
-        parser = argparse.ArgumentParser(description="Fetch Google Calendar events.")
-        parser.add_argument(
+    def __init__(self) -> None:
+        """Initialize the CLI application with an argument parser."""
+        self.parser = argparse.ArgumentParser(
+            description="Fetch Google Calendar events."
+        )
+        self.parser.add_argument(
             "-u",
             "--url",
             type=str,
             required=True,
             help="Secret address in iCal format.",
         )
-        return parser
-
-    @staticmethod
-    def display_events(events: list[Event]) -> None:
-        """Display the fetched calendar events to standard output."""
-        if not events:
-            sys.stdout.write("No events found for today.\n")
-            return
-
-        now = datetime.now(UTC)
-        for event in events:
-            if event.start is None or event.end is None:
-                continue
-            start_str = event.start.astimezone().strftime("%H:%M")
-            end_str = event.end.astimezone().strftime("%H:%M")
-            prefix = "Current" if event.start <= now < event.end else "Next"
-            msg = f"{prefix}: {event.summary} from {start_str} to {end_str}\n"
-            sys.stdout.write(msg)
 
     def run(self) -> None:
         """Execute the CLI application."""
-        args = self.create_parser().parse_args()
+        args = self.parser.parse_args()
 
         try:
             client = CalendarClient(url=args.url)
-            todays_events = client.fetch_todays_events()
-            self.display_events(todays_events)
+            current_event = client.fetch_current_event()
+            next_event = client.fetch_next_event()
+
+            if not current_event and not next_event:
+                sys.stdout.write("No events found for today.\n")
+                return
+
+            if current_event and current_event.start and current_event.end:
+                start_str = current_event.start.astimezone().strftime("%H:%M")
+                end_str = current_event.end.astimezone().strftime("%H:%M")
+                sys.stdout.write(
+                    f"Current: {current_event.summary} from {start_str} to {end_str}\n"
+                )
+
+                total = max(
+                    1.0, (current_event.end - current_event.start).total_seconds()
+                )
+                elapsed = (datetime.now(UTC) - current_event.start).total_seconds()
+                filled = max(0, min(20, int(20 * elapsed / total)))
+
+                filled_bar = "█" * filled
+                empty_bar = "░" * (20 - filled)
+                sys.stdout.write(f"[{filled_bar}{empty_bar}]\n")
+
+            if next_event and next_event.start and next_event.end:
+                start_str = next_event.start.astimezone().strftime("%H:%M")
+                end_str = next_event.end.astimezone().strftime("%H:%M")
+                sys.stdout.write(
+                    f"Next: {next_event.summary} from {start_str} to {end_str}\n"
+                )
+
         except (ValueError, OSError, RuntimeError) as e:
             sys.exit(f"Error fetching calendar: {e}")
 
