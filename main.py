@@ -18,6 +18,8 @@ class CalendarClient:
     @staticmethod
     def _is_relevant_event(event: Event, current_time: datetime) -> bool:
         """Check if an event is ongoing or starts today in local time."""
+        if event.start is None or event.end is None:
+            return False
         is_active = event.end > current_time
         starts_today_or_before = (
             event.start.astimezone().date() <= current_time.astimezone().date()
@@ -61,6 +63,8 @@ class CalendarCLI:
 
         now = datetime.now(UTC)
         for event in events:
+            if event.start is None or event.end is None:
+                continue
             start_str = event.start.astimezone().strftime("%H:%M")
             end_str = event.end.astimezone().strftime("%H:%M")
             prefix = "Current" if event.start <= now < event.end else "Next"
